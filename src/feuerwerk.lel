@@ -1,0 +1,315 @@
+#define NEOPIXEL_PIN 13
+#define NUMPIX 1000
+#define DELAY_FRAME 57
+#define DELAY_INPUT 40
+#define DEVICE_NAME "Feuerwerk"
+
+#define LED_BUILTIN 2
+
+#include "LED.h"
+
+//#include <NeoPixelBus.h>
+//NeoPixelBus<NeoRgbFeature, Neo800KbpsMethod> strip(NUMPIX, NEOPIXEL_PIN);
+
+#include "FastLED.h"
+
+std::vector<std::string> received;
+
+#include "defines.h"
+
+LED LEDs[NUMPIX];
+int globalBright = 70;
+int globalHue = 195;
+int globalWhite = 1;
+bool switchedOff = false;
+CRGB pixels[NUMPIX];
+
+unsigned long runtime = 0;
+unsigned long starttime = 0;
+unsigned long lasttimeFrame = 0;
+unsigned long lastTimeInput = 0;
+
+void setup()
+{
+    FastLED.addLeds<NEOPIXEL, NEOPIXEL_PIN>(pixels, NUMPIX);
+    for (int i = 0; i < 10; i++)
+    {
+        pixels[i] = CRGB::White;
+    }
+    FastLED.show();
+
+  randomSeed(analogRead(0) * analogRead(1));
+
+  for (int p = 0; p < NUMPIX; p++) LEDs[p] = LED();
+
+  Serial.begin(115200);
+  Serial.println("ALIVE!");
+
+  initVars();
+
+  //strip.Begin();
+  //strip.Show();
+
+  starttime = millis();
+}
+
+
+void loop()
+{
+  runtime = millis();
+
+  if (runtime - lasttimeFrame > DELAY_FRAME && !switchedOff)
+  { // 32.77 is the magic delay that we start with (for laserschwert), for some reason. We'll fix it later.
+    handleFrames((runtime - starttime + 32768) * 1e-3 - 32.77, (runtime - lasttimeFrame) * 1e-3);
+    lasttimeFrame = runtime;
+  }
+
+  if (runtime - lastTimeInput > DELAY_INPUT)
+  {
+    handleInput();
+    lastTimeInput = runtime;
+  }
+}
+
+long step = 0;
+
+float pos[SLOTS];
+float vel[SLOTS];
+float lumi[SLOTS];
+float white[SLOTS];
+float hue[SLOTS];
+int counter[SLOTS];
+int counter_max[SLOTS];
+int steps[SLOTS];
+float helper[SLOTS];
+float floatstep = 0;
+
+void handleFrames(float time, float delta)
+{
+    if(globalHue == hue[0] && globalWhite == white[0])
+    {
+        return;
+    }
+    for (int i = 0; i < NUMPIX; i++)
+    {
+        LEDs[i] = LED(globalHue, globalWhite * 0.01, 1); // idea for other patterns: replace corresponding whiteness values by shiftWhite(whiteness)
+        Serial.print(i);
+        Serial.print(" ");
+        Serial.println(globalHue * globalWhite);
+    }
+    hue[0] = globalHue;
+    white[0] = globalWhite;
+
+    showStrip(true);
+    step++;
+}
+
+void showStrip(bool visible)
+{
+  float L = .01 * globalBright;
+
+  for (uint8_t i = 0; i < NUMPIX; i++)
+  {
+    if (visible)
+    {
+        // don't forget: we mirror the ESP32 construction
+        //strip.SetPixelColor(i, RgbColor(L * LEDs[i].getR(), L * LEDs[i].getG(), L * LEDs[i].getB()));
+        pixels[i] = CRGB(L * LEDs[i].getR(), L * LEDs[i].getG(), L * LEDs[i].getB());
+        Serial.print("!");
+        Serial.print(globalBright);
+        Serial.print(" ");
+        Serial.print(L);
+        Serial.print(" ");
+        Serial.print(LEDs[i].getR());
+        Serial.print(" ");
+        Serial.print(LEDs[i].getG());
+        Serial.print(" ");
+        Serial.print(LEDs[i].getB());
+        Serial.print(" ");
+        Serial.println(i);
+
+    }
+    else
+    {
+        pixels[i] = CRGB::Black;
+      //strip.SetPixelColor(i, 0);
+    }
+  }
+  //strip.Show();
+  FastLED.show();
+}
+
+float shiftWhite(float white)
+{
+  return 0.01 * (globalWhite + white * (100 - globalWhite));
+}
+
+void(*reset)(void) = 0;
+
+void initCounters()
+{
+  step = 0;
+  floatstep = 0.0;
+  for (int s = 0; s < SLOTS; s++) counter[s] = -1;
+}
+
+void handleInput()
+{
+  while (!received.empty())
+  {
+    if(!received[0].empty())
+    {
+      char cmd = received[0][0];
+      char par = (char)0;
+      if(received[0].length() > 1)
+      {
+        par = received[0][1];
+      }
+      Serial.print(cmd);
+      Serial.print((int)par);
+      Serial.println();
+
+      switch (received[0][0])
+      {
+        case 'b':
+          controlGlobalBrightness(par);
+          break;
+
+        case 'c':
+          controlGlobalHue(par);
+          break;
+
+        case 'w':
+          controlGlobalWhite(par);
+          break;
+
+        case 'r':
+          reset();
+          break;
+
+        case 'o':
+          if (par == '0')
+          {
+            switchedOff = true;
+            showStrip(false);
+          }
+          else
+          {
+            switchedOff = false;
+          }
+          break;
+      }
+      Serial.print("RECEIVED ");
+      Serial.print(received[0][0]);
+      Serial.println((int)par);
+    }
+    received.erase(received.begin());
+  }
+}
+
+void controlGlobalBrightness(char brightByte)
+{
+  Serial.print("BRIGHTBYTE ");
+  Serial.println((int)brightByte);
+  if (brightByte == '\0')
+  {
+    switch (globalBright)
+    {
+      case LIMIT_BRIGHTNESS:
+        globalBright = 1;
+        break;
+      case 1:
+        globalBright = 10;
+        break;
+      case 10:
+        globalBright = 30;
+        break;
+      default:
+        globalBright = LIMIT_BRIGHTNESS;
+    }
+  }
+  else
+  {
+    int brightInt = (int)brightByte;
+    if (brightInt >= 1 && brightInt <= 241)
+    {
+      globalBright = (int)((float)(brightInt - 1)/240 * LIMIT_BRIGHTNESS);
+    }
+  }
+}
+
+void controlGlobalHue(char colorByte)
+{
+  Serial.print("COLORBYTE ");
+  Serial.println((int)colorByte);
+  if (colorByte == '\0')
+  {
+    return;
+    switch(globalHue)
+    {
+      case 195:
+        globalHue = 0;
+        break;
+      case 0:
+        globalHue = 80;
+        break;
+      case 80:
+        globalHue = 310;
+        break;
+      default:
+        globalHue = 195;
+    }
+  }
+  else
+  {
+    int colorInt = (int)colorByte;
+    if (colorInt >= 1 && colorInt <= 241)
+    {
+      globalHue = (int)((float)(colorInt - 1)/240 * 360);
+    }
+  }
+}
+
+void controlGlobalWhite(char whiteByte)
+{
+  if (whiteByte == '\0')
+  {
+    switch(globalWhite)
+    {
+      case 0:
+        globalWhite = 50;
+        break;
+      case 50:
+        globalHue = 100;
+        break;
+      default:
+        globalHue = 0;
+    }
+  }
+  else
+  {
+    int whiteInt = (int)whiteByte;
+    if (whiteInt >= 1 && whiteInt <= 241)
+    {
+      globalWhite = (int)(pow((float)(whiteInt - 1)/240, WHITE_SUPPRESSION) * 100);
+    }
+  }
+}
+
+void initVars()
+{
+  for (int s = 0; s < SLOTS; s++)
+  {
+    pos[s] = -1;
+    vel[s] = 0;
+    white[s] = 0;
+    lumi[s] = 1;
+    hue[s] = 0;
+    counter[s] = -1;
+    counter_max[s] = -1;
+    steps[s] = 0;
+    helper[s] = 0;
+  }
+}
+
+// note to self: I had default.csv exchanged by hugeapp.csv and adjusted the Firebeetle maximum_size from 1310720 to 1835008
